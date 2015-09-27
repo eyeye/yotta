@@ -110,10 +110,17 @@ add_subdirectory(
 # recurse into subdirectories for this component, using the two-argument
 # add_subdirectory because the directories referred to here exist in the source
 # tree, not the working directory
+
+MESSAGE( STATUS "CMAKE_BINARY_DIR:         " ${CMAKE_BINARY_DIR} )
+
 {% for srcdir, workingdir in add_own_subdirs %}
+#add_subdirectory(
+#    "{{ srcdir | replaceBackslashes }}"
+#    "{{ workingdir | replaceBackslashes }}"
+#)
 add_subdirectory(
     "{{ srcdir | replaceBackslashes }}"
-    "{{ workingdir | replaceBackslashes }}"
+    "${CMAKE_BINARY_DIR}/{{ relpath | replaceBackslashes }}/{{ workingdir | replaceBackslashes }}"
 )
 {% endfor %}
 {% endif %}
