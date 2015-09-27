@@ -143,9 +143,13 @@ class CMakeGen(object):
         '''
         manual_subdirs = []
         auto_subdirs = []
+        header_subdirs = []
         bin_subdirs = {os.path.normpath(x) : y for x,y in component.getBinaries().items()};
         test_subdirs = []
         resource_subdirs = []
+
+        print ('\r\n\r\n_listSubDirectories: %s' % component.getName())
+
         for f in sorted(os.listdir(component.path)):
             if f in Ignore_Subdirs or f.startswith('.') or f.startswith('_'):
                 continue
@@ -168,13 +172,23 @@ class CMakeGen(object):
                     # tests only supported in the `test` directory for now
                     if f in ('test',):
                         test_subdirs.append(f)
+
+            elif f == component.getName():
+                headers = self.containsSourceFiles(os.path.join(component.path, f), component)
+                if headers:
+                    header_subdirs.append((f, headers))
+                    print("dir: %s, headers: %r" % (f, headers))
+
             elif f in ('resource'):
                 resource_subdirs.append(os.path.join(component.path, f))
             elif f.lower() in ('source', 'src', 'test', 'resource'):
                 self.checkStandardSourceDir(f, component)
+
+
         return {
             "manual": manual_subdirs,
               "auto": auto_subdirs,
+           "headers": header_subdirs,
                "bin": bin_subdirs,
               "test": test_subdirs,
           "resource": resource_subdirs
@@ -302,6 +316,7 @@ class CMakeGen(object):
             binary_subdirs      = subdirs['bin']
             test_subdirs        = subdirs['test']
             resource_subdirs    = subdirs['resource']
+            header_subdirs      = subdirs['headers']
 
             add_own_subdirs = []
             for f in manual_subdirs:
@@ -330,8 +345,13 @@ class CMakeGen(object):
                         builddir, f, source_files, component, immediate_dependencies, toplevel=toplevel
                     )
                 else:
+                    header_files = []
+                    if header_subdirs:
+                        inc, header_files = header_subdirs[0]
+                        source_files.extend(header_files)
+
                     self.generateSubDirList(
-                        builddir, f, source_files, component, all_subdirs,
+                        builddir, f, source_files, header_files, component, all_subdirs,
                         immediate_dependencies, exe_name, resource_subdirs
                     )
                 # add_own_subdirs.append(
@@ -376,10 +396,10 @@ class CMakeGen(object):
         template = jinja_environment.get_template('base_CMakeLists.txt')
 
         relpath = os.path.relpath(builddir, self.buildroot)
-        print "========================================================"
-        print "buildroot    : ", self.buildroot
-        print "builddir     : ", builddir
-        print "relpath      : ", relpath
+        # print "========================================================"
+        # print "buildroot    : ", self.buildroot
+        # print "builddir     : ", builddir
+        # print "relpath      : ", relpath
         # print "modbuilddir  : ", modbuilddir
 
         file_contents = template.render({
@@ -492,7 +512,7 @@ class CMakeGen(object):
 
         self._writeFile(fname, file_contents)
 
-    def generateSubDirList(self, builddir, dirname, source_files, component, all_subdirs, immediate_dependencies, executable_name, resource_subdirs):
+    def generateSubDirList(self, builddir, dirname, source_files, header_files, component, all_subdirs, immediate_dependencies, executable_name, resource_subdirs):
         logger.debug('generate CMakeLists.txt for directory: %s' % os.path.join(component.path, dirname))
 
         link_dependencies = [x[0] for x in immediate_dependencies.items() if not x[1].isTestDependency()]
