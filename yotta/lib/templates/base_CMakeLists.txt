@@ -104,8 +104,6 @@ add_subdirectory(
 # add_subdirectory because the directories referred to here exist in the source
 # tree, not the working directory
 
-MESSAGE( STATUS "CMAKE_BINARY_DIR:         " ${CMAKE_BINARY_DIR} )
-
 {% for srcdir, workingdir in add_own_subdirs %}
 #add_subdirectory(
 #    "{{ srcdir | replaceBackslashes }}"
