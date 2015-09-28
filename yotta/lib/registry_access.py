@@ -7,28 +7,25 @@
 import re
 import logging
 from collections import OrderedDict
-import uuid
 import functools
-import json
 import binascii
 import calendar
 import datetime
 import hashlib
-import itertools
 import base64
 import os
 try:
     from urllib import quote as quoteURL
 except ImportError:
-    from urllib.parse import quote as quoteURL
+    from urllib.parse import quote as quoteURL #pylint: disable=no-name-in-module,import-error
 
 # requests, apache2
 import requests
 
 # PyJWT, MIT, Jason Web Tokens, pip install PyJWT
 import jwt
-# cryptography, Apache License, Python Cryptography library, 
-import cryptography
+# cryptography, Apache License, Python Cryptography library,
+#import cryptography
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
@@ -37,12 +34,8 @@ from cryptography.hazmat.primitives import serialization
 import settings
 # access_common, , things shared between different component access modules, internal
 import access_common
-# version, , represent versions and specifications, internal
-import version
 # Ordered JSON, , read & write json, internal
 import ordered_json
-# Github Access, , access repositories on github, internal
-import github_access
 # export key, , export pycrypto keys, internal
 import exportkey
 # auth, , authenticate users, internal
@@ -66,7 +59,7 @@ class AuthError(RuntimeError):
 # Internal functions
 
 def generate_jwt_token(private_key, registry=None):
-    registry = registry or Registry_Base_URL    
+    registry = registry or Registry_Base_URL
     expires = calendar.timegm((datetime.datetime.utcnow() + datetime.timedelta(hours=2)).timetuple())
     prn = _fingerprint(private_key.public_key())
     logger.debug('fingerprint: %s' % prn)
@@ -110,7 +103,7 @@ def _returnRequestError(fn):
         except requests.exceptions.RequestException as e:
             return "server returned status %s: %s" % (e.response.status_code, e.message)
     return wrapped
- 
+
 def _handleAuth(fn):
     ''' Decorator to re-try API calls after asking the user for authentication. '''
     @functools.wraps(fn)
@@ -121,7 +114,7 @@ def _handleAuth(fn):
         try:
             return fn(*args, **kwargs)
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == requests.codes.unauthorized:
+            if e.response.status_code == requests.codes.unauthorized: #pylint: disable=no-member
                 logger.debug('%s unauthorised', fn)
                 # any provider is sufficient for registry auth
                 auth.authorizeUser(provider=None, interactive=interactive)
@@ -140,12 +133,29 @@ def _friendlyAuthError(fn):
         try:
             return fn(*args, **kwargs)
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == requests.codes.unauthorized:
+            if e.response.status_code == requests.codes.unauthorized: #pylint: disable=no-member
                 logger.error('insufficient permission')
             else:
                 logger.error('server returned status %s: %s', e.response.status_code, e.response.text)
             raise
     return wrapped
+
+def _raiseUnavailableFor401(message):
+    ''' Returns a decorator to swallow a requests exception for modules that
+        are not accessible without logging in, and turn it into an Unavailable
+        exception.
+    '''
+    def __raiseUnavailableFor401(fn):
+        def wrapped(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == requests.codes.unauthorized:
+                    raise access_common.Unavailable(message)
+                else:
+                    raise
+        return wrapped
+    return __raiseUnavailableFor401
 
 def _swallowRequestExceptions(fail_return=None):
     def __swallowRequestExceptions(fn):
@@ -183,12 +193,12 @@ def _listVersions(namespace, name):
             namespace,
             name
         )
-        
+
         request_headers = _headersForRegistry(registry)
-        
+
         logger.debug("GET %s, %s", url, request_headers)
         response = requests.get(url, headers=request_headers)
-        
+
         if response.status_code == 404:
             continue
 
@@ -209,17 +219,20 @@ def _listVersions(namespace, name):
     return versions
 
 def _tarballURL(namespace, name, version, registry=None):
-    registry = registry or Registry_Base_URL    
+    registry = registry or Registry_Base_URL
     return '%s/%s/%s/versions/%s/tarball' % (
         registry, namespace, name, version
     )
 
+@_raiseUnavailableFor401("dependency is not available without logging in")
+@_friendlyAuthError
+@_handleAuth
 def _getTarball(url, directory, sha256):
     logger.debug('registry: get: %s' % url)
 
     if not sha256:
         logger.warn('tarball %s has no hash to check' % url)
-    
+
     # figure out which registry we're fetching this tarball from (if any) and
     # add appropriate headers
     registry = Registry_Base_URL
@@ -231,7 +244,7 @@ def _getTarball(url, directory, sha256):
             break
 
     request_headers = _headersForRegistry(registry)
-    
+
     logger.debug('GET %s, %s', url, request_headers)
     response = requests.get(url, headers=request_headers, allow_redirects=True, stream=True)
     response.raise_for_status()
@@ -265,7 +278,7 @@ def _sourceMatches(source, registry):
              'url' in source and source['url'] == registry)
 
 def _generateAndSaveKeys(registry=None):
-    registry = registry or Registry_Base_URL    
+    registry = registry or Registry_Base_URL
     k = rsa.generate_private_key(
         public_exponent=65537, key_size=2048, backend=default_backend()
     )
@@ -325,12 +338,29 @@ def _getPrivateKeyObject(registry=None):
             privatekey_der, None, default_backend()
         )
 
+_yotta_version = None
+def _getYottaVersion():
+    global _yotta_version
+    if _yotta_version is None:
+        import pkg_resources
+        _yotta_version = pkg_resources.require("yotta")[0].version
+    return _yotta_version
+
+def _getYottaClientUUID():
+    import uuid
+    current_uuid = settings.get('uuid')
+    if current_uuid is None:
+        current_uuid = u'%s' % uuid.uuid4()
+        settings.set('uuid', current_uuid)
+    return current_uuid
 
 def _headersForRegistry(registry):
     registry = registry or Registry_Base_URL
     auth_token = generate_jwt_token(_getPrivateKeyObject(registry), registry)
     r = {
-        'Authorization': 'Bearer %s' % auth_token
+        'Authorization': 'Bearer %s' % auth_token,
+        'X-Yotta-Client-Version': _getYottaVersion(),
+        'X-Yotta-Client-ID': _getYottaClientUUID()
     }
     if registry == Registry_Base_URL:
         return r
@@ -367,7 +397,7 @@ class RegistryThing(access_common.RemoteComponent):
         self.name = name
         self.spec = version_spec
         self.namespace = namespace
-    
+
     @classmethod
     def createFromSource(cls, vs, name, registry):
         ''' returns a registry component for anything that's a valid package
@@ -393,7 +423,7 @@ class RegistryThing(access_common.RemoteComponent):
 
     def tipVersion(self):
         raise NotImplementedError()
-    
+
     @classmethod
     def remoteType(cls):
         return 'registry'
@@ -408,7 +438,7 @@ def publish(namespace, name, version, description_file, tar_file, readme_file,
         return value by the decorators. (If successful, the decorated function
         returns None)
     '''
-    registry = registry or Registry_Base_URL    
+    registry = registry or Registry_Base_URL
 
     url = '%s/%s/%s/versions/%s' % (
         registry,
@@ -422,15 +452,15 @@ def publish(namespace, name, version, description_file, tar_file, readme_file,
     elif readme_file_ext == '':
         readme_section_name = 'readme'
     else:
-        raise ValueError('unsupported readme type: "%s"' % readne_file_ext)
-    
+        raise ValueError('unsupported readme type: "%s"' % readme_file_ext)
+
     # description file is in place as text (so read it), tar file is a file
     body = OrderedDict([('metadata', (None, description_file.read(),'application/json')),
                         ('tarball',('tarball', tar_file)),
                         (readme_section_name, (readme_section_name, readme_file))])
 
     headers = _headersForRegistry(registry)
-    
+
     response = requests.put(url, headers=headers, files=body)
     response.raise_for_status()
 
@@ -443,7 +473,7 @@ def unpublish(namespace, name, version, registry=None):
     ''' Try to unpublish a recently published version. Return any errors that
         occur.
     '''
-    registry = registry or Registry_Base_URL    
+    registry = registry or Registry_Base_URL
 
     url = '%s/%s/%s/versions/%s' % (
         registry,
@@ -451,7 +481,7 @@ def unpublish(namespace, name, version, registry=None):
         name,
         version
     )
-    
+
     headers = _headersForRegistry(registry)
     response = requests.delete(url, headers=headers)
     response.raise_for_status()
@@ -463,10 +493,10 @@ def unpublish(namespace, name, version, registry=None):
 @_handleAuth
 def listOwners(namespace, name, registry=None):
     ''' List the owners of a module or target (owners are the people with
-        permission to publish versions and add/remove the owners). 
+        permission to publish versions and add/remove the owners).
     '''
     registry = registry or Registry_Base_URL
-    
+
     url = '%s/%s/%s/owners' % (
         registry,
         namespace,
@@ -480,7 +510,7 @@ def listOwners(namespace, name, registry=None):
     if response.status_code == 404:
         logger.error('no such %s, "%s"' % (namespace[:-1], name))
         return None
-    
+
     # raise exceptions for other errors - the auth decorators handle these and
     # re-try if appropriate
     response.raise_for_status()
@@ -492,10 +522,10 @@ def listOwners(namespace, name, registry=None):
 @_handleAuth
 def addOwner(namespace, name, owner, registry=None):
     ''' Add an owner for a module or target (owners are the people with
-        permission to publish versions and add/remove the owners). 
+        permission to publish versions and add/remove the owners).
     '''
     registry = registry or Registry_Base_URL
-    
+
     url = '%s/%s/%s/owners/%s' % (
         registry,
         namespace,
@@ -523,10 +553,10 @@ def addOwner(namespace, name, owner, registry=None):
 @_handleAuth
 def removeOwner(namespace, name, owner, registry=None):
     ''' Remove an owner for a module or target (owners are the people with
-        permission to publish versions and add/remove the owners). 
+        permission to publish versions and add/remove the owners).
     '''
     registry = registry or Registry_Base_URL
-    
+
     url = '%s/%s/%s/owners/%s' % (
         registry,
         namespace,
@@ -548,14 +578,32 @@ def removeOwner(namespace, name, owner, registry=None):
 
     return True
 
+def whoami(registry=None):
+    registry = registry or Registry_Base_URL
+    url = '%s/users/me' % (
+        registry
+    )
+
+    request_headers = _headersForRegistry(registry)
+
+    logger.debug('test login...')
+    response = requests.get(url, headers=request_headers)
+    if response.status_code == 401:
+        # not logged in
+        return None
+    elif response.status_code != 200:
+        logger.error('error getting user information: %s', response.error)
+        return None
+    return ', '.join(ordered_json.loads(response.text).get('primary_emails', {}).values())
+
 
 def search(query='', keywords=[], registry=None):
     ''' generator of objects returned by the search endpoint (both modules and
         targets).
-        
+
         Query is a full-text search (description, name, keywords), keywords
         search only the module/target description keywords lists.
-        
+
         If both parameters are specified the search is the intersection of the
         two queries.
     '''
@@ -573,7 +621,7 @@ def search(query='', keywords=[], registry=None):
         params['query'] = query
     if len(keywords):
         params['keywords[]'] = keywords
-    
+
     while True:
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
@@ -584,7 +632,7 @@ def search(query='', keywords=[], registry=None):
             params['skip'] += params['limit']
         else:
             break
-    
+
 
 def deauthorize(registry=None):
     registry = registry or Registry_Base_URL
@@ -639,22 +687,10 @@ def getPublicKey(registry=None):
     if b'-----BEGIN PUBLIC KEY-----' in pubkey_pem:
         pubkey = serialization.load_pem_public_key(pubkey_pem, default_backend())
     else:
-        pubkey_der = binascii.unhexlify(pubkey_pem)        
+        pubkey_der = binascii.unhexlify(pubkey_pem)
         pubkey = serialization.load_der_public_key(pubkey_der, default_backend())
     return _pubkeyWireFormat(pubkey)
 
-
-def testLogin(registry=None):
-    registry = registry or Registry_Base_URL    
-    url = '%s/users/me' % (
-        registry
-    )
-
-    request_headers = _headersForRegistry(registry)
-
-    logger.debug('test login...')
-    response = requests.get(url, headers=request_headers)
-    response.raise_for_status()
 
 def getAuthData(registry=None):
     ''' Poll the registry to get the result of a completed authentication
@@ -665,7 +701,7 @@ def getAuthData(registry=None):
     url = '%s/tokens' % (
         registry
     )
-    
+
     request_headers = _headersForRegistry(registry)
 
     logger.debug('poll for tokens... %s', request_headers)
@@ -676,10 +712,10 @@ def getAuthData(registry=None):
         logger.debug(str(e))
         return None
 
-    if response.status_code == requests.codes.unauthorized:
+    if response.status_code == requests.codes.unauthorized: #pylint: disable=no-member
         logger.debug('Unauthorised')
         return None
-    elif response.status_code == requests.codes.not_found:
+    elif response.status_code == requests.codes.not_found: #pylint: disable=no-member
         logger.debug('Not Found')
         return None
 
