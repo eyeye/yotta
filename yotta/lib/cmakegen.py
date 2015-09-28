@@ -179,7 +179,6 @@ class CMakeGen(object):
                 headers = self.containsSourceFiles(os.path.join(component.path, f), component)
                 if headers:
                     header_subdirs.append((f, headers))
-                    print("dir: %s, headers: %r" % (f, headers))
 
             elif f in ('resource'):
                 resource_subdirs.append(os.path.join(component.path, f))
